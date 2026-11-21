@@ -1,0 +1,6 @@
+.env
+.env.*
+.glm-api-env-*
+/dist/
+/glm-api
+/glm-api.exe
