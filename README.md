@@ -4,7 +4,7 @@
 
 ## Запуск
 
-Скачайте и распакуйте сборку для своей платформы из [GitHub Actions](https://github.com/skb8/glm-api/actions/workflows/build.yml). На Linux и macOS выполните `chmod +x glm-api` и запустите `./glm-api`. На Windows запустите `./glm-api.exe`.
+Скачайте архив для вашей ОС и архитектуры из [GitHub Releases](https://github.com/skb8/glm-api/releases/latest). В релизе доступен файл контрольных сумм `SHA256SUMS`. Распакуйте архив и запустите `./glm-api` на Linux или macOS. На Windows запустите `./glm-api.exe`.
 
 Для сборки из исходников нужен Go 1.25+.
 
