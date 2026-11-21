@@ -22,9 +22,7 @@ jobs:
     if: github.ref == 'refs/heads/main'
     runs-on: ubuntu-latest
     outputs:
-      tag: ${{ steps.targets.outputs.tag }}
-      matrix: ${{ steps.targets.outputs.matrix }}
-      count: ${{ steps.targets.outputs.count }}
+      tag: ${{ steps.version.outputs.tag }}
     steps:
       - uses: actions/checkout@v7
         with:
@@ -36,32 +34,21 @@ jobs:
           cache: false
       - run: go vet ./...
       - run: go test -race ./...
-      - name: Select release platforms
-        id: targets
+      - name: Read release version
+        id: version
         run: |
           tag=$(cat VERSION)
-          [[ $tag =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]
+          [[ $tag =~ ^[0-9]+\.[0-9]+$ ]]
           echo "tag=$tag" >> "$GITHUB_OUTPUT"
-          go tool dist list | python3 -c '
-          import json
-          import sys
-
-          targets = []
-          for line in sys.stdin:
-              os, arch = line.strip().split("/")
-              if os in {"linux", "darwin", "windows"}:
-                  targets.append({"os": os, "arch": arch})
-
-          print("matrix=" + json.dumps({"include": targets}, separators=(",", ":")))
-          print("count=" + str(len(targets)))
-          ' >> "$GITHUB_OUTPUT"
 
   build:
     needs: prepare
     runs-on: ubuntu-latest
     strategy:
       fail-fast: false
-      matrix: ${{ fromJSON(needs.prepare.outputs.matrix) }}
+      matrix:
+        os: [linux, darwin, windows]
+        arch: [amd64, arm64]
     steps:
       - uses: actions/checkout@v7
         with:
@@ -84,9 +71,6 @@ jobs:
             go build -trimpath -ldflags="-s -w" -o bin/glm-api.exe .
             zip -j "packages/$archive.zip" bin/glm-api.exe
           else
-            if [[ "$GOARCH" == arm ]]; then
-              export GOARM=5
-            fi
             go build -trimpath -ldflags="-s -w" -o bin/glm-api .
             tar -czf "packages/$archive.tar.gz" -C bin glm-api
           fi
@@ -107,17 +91,15 @@ jobs:
           pattern: package-*
           path: packages
           merge-multiple: true
-      - name: Publish binaries and checksums
+      - name: Publish binaries
         env:
           GH_TOKEN: ${{ github.token }}
           GH_REPO: ${{ github.repository }}
           TAG: ${{ needs.prepare.outputs.tag }}
-          TARGET_COUNT: ${{ needs.prepare.outputs.count }}
         run: |
           shopt -s nullglob
           archives=(packages/*.tar.gz packages/*.zip)
-          [[ ${#archives[@]} -eq "$TARGET_COUNT" ]]
-          (cd packages && sha256sum glm-api-*) > packages/SHA256SUMS
+          [[ ${#archives[@]} -eq 6 ]]
 
           if release=$(gh release view "$TAG" --json isDraft,targetCommitish); then
             if [[ $(jq -r .isDraft <<<"$release") == false ]]; then
@@ -128,7 +110,7 @@ jobs:
           else
             gh release create "$TAG" --draft --target "$GITHUB_SHA" \
               --title "glm-api $TAG" \
-              --notes "Go proxy for Z.AI Coding Plan with OpenAI Chat Completions and Anthropic Messages APIs. Includes binaries for Linux, macOS and Windows and SHA-256 checksums."
+              --notes "Go proxy for Z.AI Coding Plan with OpenAI Chat Completions and Anthropic Messages APIs. Includes AMD64 and ARM64 builds for Linux, macOS and Windows."
           fi
-          gh release upload "$TAG" --clobber "${archives[@]}" packages/SHA256SUMS
+          gh release upload "$TAG" --clobber "${archives[@]}"
           gh release edit "$TAG" --draft=false --latest
