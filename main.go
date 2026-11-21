@@ -30,6 +30,7 @@ func run() error {
 	envPath := flag.String("env", ".env", "path to the credentials file")
 	login := flag.Bool("login", false, "sign in to Z.AI again")
 	noBrowser := flag.Bool("no-browser", false, "print the sign-in URL without opening a browser")
+	proxy := flag.String("proxy", "", "upstream HTTP, HTTPS or SOCKS5 proxy URL")
 	flag.Parse()
 
 	ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
@@ -56,7 +57,14 @@ func run() error {
 		return err
 	}
 
-	transport := http.DefaultTransport.(*http.Transport).Clone()
+	proxyAddress := strings.TrimSpace(*proxy)
+	if proxyAddress == "" {
+		proxyAddress = strings.TrimSpace(env.get("GLM_UPSTREAM_PROXY"))
+	}
+	transport, err := upstreamTransport(proxyAddress)
+	if err != nil {
+		return err
+	}
 	transport.ResponseHeaderTimeout = 90 * time.Second
 	defer transport.CloseIdleConnections()
 	client := &http.Client{

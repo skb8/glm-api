@@ -156,7 +156,7 @@ func (s *server) forward(r *http.Request, endpoint string, body []byte) (*http.R
 
 	res, err := s.z.http.Do(req)
 	if err != nil {
-		return nil, errors.New("model connection to Z.AI failed")
+		return nil, upstreamNetworkError(req.URL.Hostname(), err)
 	}
 	if res.StatusCode == http.StatusUnauthorized {
 		s.z.rejectProjectToken(token)

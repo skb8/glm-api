@@ -55,8 +55,10 @@ type sessionTokens struct {
 }
 
 type upstreamError struct {
-	status int
-	code   string
+	status        int
+	code          string
+	invalidLogin  bool
+	hasRetryAfter bool
 }
 
 func (e *upstreamError) Error() string {
@@ -76,7 +78,7 @@ func upstreamIs(err error, status int) bool {
 }
 
 func (z *zcode) getJSON(ctx context.Context, method, endpoint, auth string, data, out any) error {
-	ctx, cancel := context.WithTimeout(ctx, 15*time.Second)
+	ctx, cancel := context.WithTimeout(ctx, 30*time.Second)
 	defer cancel()
 
 	var body io.Reader
@@ -98,17 +100,21 @@ func (z *zcode) getJSON(ctx context.Context, method, endpoint, auth string, data
 	}
 	res, err := z.http.Do(req)
 	if err != nil {
-		return errors.New("ошибка соединения с Z.AI")
+		return upstreamNetworkError(req.URL.Hostname(), err)
 	}
 	defer res.Body.Close()
 	if res.StatusCode < 200 || res.StatusCode >= 300 {
-		return &upstreamError{status: res.StatusCode}
+		return &upstreamError{status: res.StatusCode, hasRetryAfter: res.Header.Get("Retry-After") != ""}
 	}
 	var envelope struct {
 		Code json.RawMessage `json:"code"`
+		Msg  string          `json:"msg"`
 		Data json.RawMessage `json:"data"`
 	}
-	if json.NewDecoder(io.LimitReader(res.Body, 2<<20)).Decode(&envelope) != nil {
+	if err := json.NewDecoder(io.LimitReader(res.Body, 2<<20)).Decode(&envelope); err != nil {
+		if ctx.Err() != nil {
+			return upstreamNetworkError(req.URL.Hostname(), ctx.Err())
+		}
 		return errors.New("некорректный JSON от Z.AI")
 	}
 	switch strings.Trim(string(envelope.Code), "\"") {
@@ -119,7 +125,11 @@ func (z *zcode) getJSON(ctx context.Context, method, endpoint, auth string, data
 			return errors.New("в ответе Z.AI отсутствует код")
 		}
 	default:
-		return &upstreamError{status: res.StatusCode, code: safeCode(envelope.Code)}
+		return &upstreamError{
+			status:       res.StatusCode,
+			code:         safeCode(envelope.Code),
+			invalidLogin: endpoint == z.apiBase+"/api/auth/z/login" && strings.EqualFold(strings.TrimSpace(envelope.Msg), "Z.ai user information is invalid"),
+		}
 	}
 	if json.Unmarshal(envelope.Data, out) != nil || string(envelope.Data) == "null" {
 		return errors.New("в ответе Z.AI отсутствуют ожидаемые данные")
@@ -246,8 +256,22 @@ func (z *zcode) businessToken(ctx context.Context) (string, error) {
 		TTLCamel    int64  `json:"expiresIn"`
 	}
 	start := time.Now()
-	err := z.getJSON(ctx, "POST", z.apiBase+"/api/auth/z/login", "", map[string]string{"token": z.accountToken}, &data)
-	if upstreamIs(err, 401) || upstreamIs(err, 403) {
+	exchange := func() error {
+		return z.getJSON(ctx, "POST", z.apiBase+"/api/auth/z/login", "", map[string]string{"token": z.accountToken}, &data)
+	}
+	err := exchange()
+	if retrySessionExchange(err) {
+		timer := time.NewTimer(750 * time.Millisecond)
+		defer timer.Stop()
+		select {
+		case <-ctx.Done():
+			return "", ctx.Err()
+		case <-timer.C:
+			err = exchange()
+		}
+	}
+	var upstream *upstreamError
+	if upstreamIs(err, 401) || upstreamIs(err, 403) || (errors.As(err, &upstream) && upstream.invalidLogin) {
 		return "", errLoginRequired
 	}
 	if err != nil {
@@ -274,6 +298,23 @@ func (z *zcode) businessToken(ctx context.Context) (string, error) {
 	}
 	z.business = credential{token: token, expiry: expiry}
 	return token, nil
+}
+
+func retrySessionExchange(err error) bool {
+	var network *networkError
+	if errors.As(err, &network) {
+		return network.temporary
+	}
+	var upstream *upstreamError
+	if !errors.As(err, &upstream) || upstream.hasRetryAfter {
+		return false
+	}
+	switch upstream.status {
+	case http.StatusRequestTimeout, http.StatusBadGateway, http.StatusServiceUnavailable, http.StatusGatewayTimeout:
+		return true
+	default:
+		return false
+	}
 }
 
 func defaultIndex[T any](values []T, name func(T) string, preferred string) int {
