@@ -1,0 +1,28 @@
+name: Remove duplicate development branch
+
+on:
+  push:
+    branches: [main]
+    paths: [.github/workflows/branch-cleanup.yml]
+
+permissions:
+  contents: write
+
+jobs:
+  cleanup:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - name: Delete equivalent branch
+        shell: bash
+        run: |
+          set -euo pipefail
+          branch=refs/heads/fix/zai-network
+          checkpoint=45514a2730687946cb266a651550f02bbdadc978
+          head=$(git ls-remote --heads origin "$branch" | cut -f1)
+          if [[ -z "$head" ]]; then
+            exit 0
+          fi
+          git fetch --depth=1 --no-tags origin "$checkpoint" "$head"
+          git diff --exit-code "$checkpoint^{tree}" "$head^{tree}"
+          git push --force-with-lease="$branch:$head" origin ":$branch"
